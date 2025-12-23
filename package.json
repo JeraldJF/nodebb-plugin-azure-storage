@@ -1,6 +1,6 @@
 {
   "name": "nodebb-plugin-azurestorage",
-  "version": "0.1.4",
+  "version": "1.0.0",
   "description": "A plugin for NodeBB to take file uploads and store them on Azure Storage",
   "main": "index.js",
   "scripts": {
@@ -24,15 +24,15 @@
     "url": "https://github.com/hmqgg/nodebb-plugin-azurestorage/issues"
   },
   "nbbpm": {
-    "compatibility": "^1.9.0"
+    "compatibility": "^4.0.0"
   },
   "dependencies": {
-    "azure-storage": "^2.8.1",
+    "@azure/storage-blob": "^12.0.0",
+    "axios": "^1.7.0",
     "dotenv": "^8.2.0",
     "imagemagick-stream": "^4.1.1",
     "jquery": "^3.5.1",
     "mime": "^2.2.0",
-    "request": "^2.69.0",
     "uniqid": "~4.1.1"
   }
 }

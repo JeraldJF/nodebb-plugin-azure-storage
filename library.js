@@ -1,11 +1,11 @@
 "use strict";
 
 var plugin = {},
-	azure = require("azure-storage"),
+	{ BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require("@azure/storage-blob"),
 	mime = require("mime"),
 	uniqid = require("uniqid"),
 	fs = require("fs"),
-	request = require("request"),
+	axes = require("axios"),
 	path = require("path"),
 	im = require('imagemagick-stream'),
 	async = require.main.require('async'),
@@ -13,25 +13,25 @@ var plugin = {},
 	nconf = module.parent.require('nconf'),
 	meta = module.parent.require("./meta"),
 	db = module.parent.require("./database");
-	const dotenv = require('dotenv');
-    dotenv.config();
+const dotenv = require('dotenv');
+dotenv.config();
 
 
 var settings = {
 	accessKeyId: false,
 	secretAccessKey: false,
 	container: process.env.AZURE_STORAGE_CONTAINER,
-	host:process.env.AZURE_STORAGE_HOSTNAME,
-	path:undefined,
-	storageAccessKey:process.env.AZURE_STORAGE_ACCESS_KEY,
-	storageAccount:process.env.AZURE_STORAGE_ACCOUNT,
+	host: process.env.AZURE_STORAGE_HOSTNAME,
+	path: undefined,
+	storageAccessKey: process.env.AZURE_STORAGE_ACCESS_KEY,
+	storageAccount: process.env.AZURE_STORAGE_ACCOUNT,
 	connectionString: `DefaultEndpointsProtocol=https;AccountName=${process.env.AZURE_STORAGE_ACCOUNT};AccountKey=${process.env.AZURE_STORAGE_ACCESS_KEY};EndpointSuffix=core.windows.net`
 };
 
 var accessKeyIdFromDb = false;
 var secretAccessKeyFromDb = false;
 
-var blobSvc = null;
+var blobServiceClient = null;
 
 plugin.activate = function (data) {
 	if (data.id === 'nodebb-plugin-azurestorage') {
@@ -42,7 +42,7 @@ plugin.activate = function (data) {
 
 plugin.deactivate = function (data) {
 	if (data.id === 'nodebb-plugin-azurestorage') {
-		blobSvc = null;
+		blobServiceClient = null;
 	}
 };
 
@@ -58,18 +58,18 @@ plugin.load = function (params, callback) {
 
 		params.router.post("/api" + adminRoute + "/assettings", assettings);
 		params.router.post("/api" + adminRoute + "/credentials", credentials);
-		params.router.get("/api/downloads/sasgenerator/",sasGenerator);
+		params.router.get("/api/downloads/sasgenerator/", sasGenerator);
 
 		callback();
 	});
 };
 
 function renderAdmin(req, res) {
-    	// Regenerate csrf token
+	// Regenerate csrf token
 	var token = req.csrfToken();
 
 	var forumPath = nconf.get('url');
-	if(forumPath.split("").reverse()[0] != "/" ){
+	if (forumPath.split("").reverse()[0] != "/") {
 		forumPath = forumPath + "/";
 	}
 	var data = {
@@ -131,7 +131,11 @@ function fetchSettings(callback) {
 		// }
 
 		if (settings.accessKeyId && settings.secretAccessKey) {
-			blobSvc = azure.createBlobService(settings.accessKeyId, settings.secretAccessKey);
+			const sharedKeyCredential = new StorageSharedKeyCredential(settings.accessKeyId, settings.secretAccessKey);
+			blobServiceClient = new BlobServiceClient(
+				`https://${settings.accessKeyId}.blob.core.windows.net`,
+				sharedKeyCredential
+			);
 		}
 
 		if (typeof callback === "function") {
@@ -141,12 +145,12 @@ function fetchSettings(callback) {
 }
 
 function Blob() {
-	if (!blobSvc) {
-		blobSvc = azure.createBlobService(settings.storageAccount,settings.storageAccessKey);
-		console.log("created blob") // using env AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_ACCESS_KEY
+	if (!blobServiceClient) {
+		blobServiceClient = BlobServiceClient.fromConnectionString(settings.connectionString);
+		console.log("created blob service client") // using env AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_ACCESS_KEY
 	}
 
-	return blobSvc;
+	return blobServiceClient;
 }
 
 function makeError(err) {
@@ -196,18 +200,18 @@ function saveSettings(settings, res, next) {
 
 plugin.uploadImage = function (data, callback) {
 	async.waterfall([
-		function(next) {
+		function (next) {
 			var image = data.image;
 			if (!image) {
 				return next(new Error("[[error:invalid-image]]"));
 			}
 			if (image.size > parseInt(meta.config.maximumFileSize, 10) * 1024) {
-				winston.error("error:file-too-big, " + meta.config.maximumFileSize );
+				winston.error("error:file-too-big, " + meta.config.maximumFileSize);
 				return next(new Error("[[error:file-too-big, " + meta.config.maximumFileSize + "]]"));
 			}
 			next(null, image);
 		},
-		function(_image, next) {
+		function (_image, next) {
 			var image = _image;
 			var type = image.url ? "url" : "file";
 			var allowedMimeTypes = ['image/png', 'image/jpeg', 'image/gif'];
@@ -215,7 +219,7 @@ plugin.uploadImage = function (data, callback) {
 				if (!image.path) {
 					return next(new Error("invalid image path"));
 				}
-		
+
 				if (allowedMimeTypes.indexOf(mime.getType(image.path)) === -1) {
 					return next(new Error("invalid mime type"));
 				}
@@ -227,15 +231,15 @@ plugin.uploadImage = function (data, callback) {
 					return next(new Error("invalid mime type"));
 				}
 				var filename = image.url.split("/").pop();
-		
+
 				var imageDimension = parseInt(meta.config.profileImageDimension, 10) || 128;
-		
+
 				var resize = im().resize(imageDimension + "^", imageDimension + "^");
-				var imstream = request(image.url).pipe(resize);
+				var imstream = axios.get(image.url, { responseType: 'stream' }).then(response => response.data).pipe(resize);
 				next(null, imstream, image.name);
 			}
 		},
-		function(_rs, _name, next) {
+		function (_rs, _name, next) {
 			uploadToAzureStorage(_name, _rs, next);
 		}
 	], callback);
@@ -243,30 +247,30 @@ plugin.uploadImage = function (data, callback) {
 
 plugin.uploadFile = function (data, callback) {
 	async.waterfall([
-		function(next) {
-			var file = data.file;	
+		function (next) {
+			var file = data.file;
 			if (!file) {
 				return next(new Error("[[error:invalid-file]]"));
 			}
-		
+
 			if (!file.path) {
 				return next(new Error("[[error:invalid-file-path]]"));
 			}
 			next(null, file);
 		},
-		function(_file, next) {
+		function (_file, next) {
 			var file = _file;
 			if (file.size > parseInt(meta.config.maximumFileSize, 10) * 1024) {
-				winston.error("error:file-too-big, " + meta.config.maximumFileSize );
+				winston.error("error:file-too-big, " + meta.config.maximumFileSize);
 				return next(new Error("[[error:file-too-big, " + meta.config.maximumFileSize + "]]"));
 			}
 			next(null, file);
 		},
-		function(_file, next) {
+		function (_file, next) {
 			var rs = fs.createReadStream(_file.path);
 			next(null, rs, _file.name);
 		},
-		function(_rs, _name, next) {
+		function (_rs, _name, next) {
 			uploadToAzureStorage(_name, _rs, next);
 		}
 	], callback);
@@ -274,11 +278,11 @@ plugin.uploadFile = function (data, callback) {
 
 function uploadToAzureStorage(filename, rs, callback) {
 	async.waterfall([
-		function(next) {
+		function (next) {
 			var azPath;
 			if (settings.path && 0 < settings.path.length) {
 				azPath = settings.path;
-		
+
 				if (!azPath.match(/\/$/)) {
 					// Add trailing slash
 					azPath = azPath + "/";
@@ -292,40 +296,36 @@ function uploadToAzureStorage(filename, rs, callback) {
 			var oname = path.basename(filename, ename);
 			oname = oname.replace(/\ /g, "_");
 
-			var key = azKeyPath + uniqid.time(oname + '-') + ename ;
+			var key = azKeyPath + uniqid.time(oname + '-') + ename;
 			next(null, key);
 		},
-		function(key, next)
-		{
-			var host = "https://" + settings.accessKeyId +".blob.core.windows.net/" + settings.container;
+		function (key, next) {
+			var host = "https://" + settings.accessKeyId + ".blob.core.windows.net/" + settings.container;
 			if (settings.host && 0 < settings.host.length) {
 				host = settings.host;
 			}
 			next(null, key, host);
 		},
-		function(key, host, next)
-		{
-			var options = {
-				contentSettings: {
-					contentType: mime.getType(filename)
+		function (key, host, next) {
+			const containerClient = Blob().getContainerClient(settings.container);
+			const blockBlobClient = containerClient.getBlockBlobClient(key);
+			const blobOptions = {
+				blobHTTPHeaders: {
+					blobContentType: mime.getType(filename)
 				}
 			};
-			rs.pipe(Blob().createWriteStreamToBlockBlob(settings.container, key, function(err, result, resp) {
-				if (err) {
-					return next(err);
-				}
-			})).on('finish', function(err) {
-				if (err) {
-					return (next(makeError(err)));
-				}
-				var response = {
-					name: filename,
-					url:"/discussions/api/downloads/sasgenerator?key="+key
-					//url:"https://" + host + "/nodebb/" + key				
-				};
 
-				next(null, response);
-			});
+			blockBlobClient.uploadStream(rs, undefined, undefined, blobOptions)
+				.then(() => {
+					var response = {
+						name: filename,
+						url: "/discussions/api/downloads/sasgenerator?key=" + key
+					};
+					next(null, response);
+				})
+				.catch(err => {
+					next(makeError(err));
+				});
 		}
 	], callback);
 }
@@ -340,24 +340,27 @@ plugin.menu = function (custom_header, callback) {
 	callback(null, custom_header);
 };
 
-function sasGenerator(req,res,next)
-{
+function sasGenerator(req, res, next) {
 	var docName = req.query.key;
 	var startDate = new Date();
 	var expiryDate = new Date(startDate);
 	expiryDate.setMinutes(startDate.getMinutes() + 5);
 	startDate.setMinutes(startDate.getMinutes() - 5);
 
-	var sharedAccessPolicy = {
-		AccessPolicy: {
-			Permissions: azure.BlobUtilities.SharedAccessPermissions.READ,
-			Start: startDate,
-			Expiry: expiryDate
-		}
+	const containerClient = Blob().getContainerClient(settings.container);
+	const blobClient = containerClient.getBlobClient(docName);
+
+	const sasOptions = {
+		containerName: settings.container,
+		blobName: docName,
+		permissions: BlobSASPermissions.parse("r"), // read permission
+		startsOn: startDate,
+		expiresOn: expiryDate
 	};
-    Blob()
-	var token = blobSvc.generateSharedAccessSignature(settings.container, docName, sharedAccessPolicy);
-	var sasUrl = blobSvc.getUrl(settings.container, docName, token);
+
+	const sharedKeyCredential = new StorageSharedKeyCredential(settings.storageAccount, settings.storageAccessKey);
+	const sasToken = generateBlobSASQueryParameters(sasOptions, sharedKeyCredential).toString();
+	const sasUrl = `${blobClient.url}?${sasToken}`;
 	res.redirect(sasUrl);
 }
 
