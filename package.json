@@ -2,7 +2,7 @@
   "name": "nodebb-plugin-azurestorage",
   "version": "2.0.1",
   "description": "A plugin for NodeBB to take file uploads and store them on Azure Storage",
-  "main": "index.js",
+  "main": "library.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

@@ -11,8 +11,8 @@ var plugin = {},
 	async = require.main.require('async'),
 	winston = module.parent.require("winston"),
 	nconf = module.parent.require('nconf'),
-	meta = module.parent.require("./meta"),
-	db = module.parent.require("./database");
+	meta = module.parent.require("./src/meta"),
+	db = module.parent.require("./src/database");
 const dotenv = require('dotenv');
 dotenv.config();
 
