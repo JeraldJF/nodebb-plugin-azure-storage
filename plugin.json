@@ -2,7 +2,7 @@
     "id": "nodebb-plugin-azurestorage",
     "name": "Azure Storage Plugin",
     "description": "A plugin for NodeBB to take file uploads and store them on Azure Storage",
-    "url": "https://github.com/JeraldJF/nodebb-plugin-azurestorage",
+    "url": "https://github.com/Sunbird-Lern/nodebb-plugin-azurestorage",
     "staticDirs": {
         "azs": "./static"
     },
